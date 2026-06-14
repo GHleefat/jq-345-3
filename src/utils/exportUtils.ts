@@ -1,9 +1,10 @@
 import { InkEngine } from "./inkEngine";
 import { PlaybackEngine } from "./playbackEngine";
 import { generatePaperTexture, type PaperType } from "./paperTexture";
+import { GIFEncoder } from "./gifEncoder";
 
 export interface ExportOptions {
-  format: "webm" | "png-sequence";
+  format: "webm" | "gif" | "png-sequence";
   fps: number;
   speed: number;
   quality: number;
@@ -89,7 +90,10 @@ export class VideoExporter {
       ];
       let mimeType = "";
       for (const type of mimeTypes) {
-        if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type)) {
+        if (
+          typeof MediaRecorder !== "undefined" &&
+          MediaRecorder.isTypeSupported(type)
+        ) {
           mimeType = type;
           break;
         }
@@ -129,7 +133,8 @@ export class VideoExporter {
       let currentFrame = 0;
       let isRecording = true;
 
-      const originalOnTimeUpdate = (this.playbackEngine as any).callbacks?.onTimeUpdate;
+      const originalOnTimeUpdate = (this.playbackEngine as any).callbacks
+        ?.onTimeUpdate;
 
       (this.playbackEngine as any).callbacks.onTimeUpdate = (time: number) => {
         const inkCanvas = (this.inkEngine as any).getCanvas();
@@ -148,7 +153,11 @@ export class VideoExporter {
           ctx.fillStyle = "rgba(0,0,0,0.02)";
           ctx.font = `${12 * options.scale}px serif`;
           ctx.textAlign = "right";
-          ctx.fillText("墨韵", scaledWidth - 10 * options.scale, scaledHeight - 10 * options.scale);
+          ctx.fillText(
+            "墨韵",
+            scaledWidth - 10 * options.scale,
+            scaledHeight - 10 * options.scale,
+          );
         }
 
         currentFrame++;
@@ -162,14 +171,17 @@ export class VideoExporter {
         originalOnTimeUpdate?.(time);
       };
 
-      const originalOnComplete = (this.playbackEngine as any).callbacks?.onComplete;
+      const originalOnComplete = (this.playbackEngine as any).callbacks
+        ?.onComplete;
       (this.playbackEngine as any).callbacks.onComplete = () => {
         setTimeout(() => {
           if (isRecording) {
             isRecording = false;
             recorder.stop();
-            (this.playbackEngine as any).callbacks.onTimeUpdate = originalOnTimeUpdate;
-            (this.playbackEngine as any).callbacks.onComplete = originalOnComplete;
+            (this.playbackEngine as any).callbacks.onTimeUpdate =
+              originalOnTimeUpdate;
+            (this.playbackEngine as any).callbacks.onComplete =
+              originalOnComplete;
           }
         }, 500);
 
@@ -185,10 +197,83 @@ export class VideoExporter {
     options: Partial<ExportOptions> = {},
     onProgress?: (progress: ExportProgress) => void,
   ): Promise<Blob | null> {
-    return this.exportVideo(
-      { ...options, format: "webm", fps: options.fps || 15 },
-      onProgress,
-    );
+    const defaultOptions: ExportOptions = {
+      format: "gif",
+      fps: 15,
+      speed: 1,
+      quality: 0.8,
+      scale: 1,
+      includePaper: true,
+    };
+
+    const opts = { ...defaultOptions, ...options };
+
+    const state = this.playbackEngine.getState();
+    const duration = state.duration / opts.speed;
+    const totalFrames = Math.ceil(duration * opts.fps);
+    const frameInterval = 1000 / opts.fps;
+    const delayPerFrame = Math.round(100 / opts.fps);
+
+    const scaledWidth = Math.floor(this.canvasWidth * opts.scale);
+    const scaledHeight = Math.floor(this.canvasHeight * opts.scale);
+
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = scaledWidth;
+    exportCanvas.height = scaledHeight;
+    const ctx = exportCanvas.getContext("2d")!;
+
+    const paperCanvas = opts.includePaper
+      ? generatePaperTexture(scaledWidth, scaledHeight, this.paperType)
+      : null;
+
+    this.playbackEngine.reset();
+
+    const gifEncoder = new GIFEncoder(scaledWidth, scaledHeight);
+    gifEncoder.setRepeat(0);
+
+    for (let i = 0; i < totalFrames; i++) {
+      const time = i * frameInterval * opts.speed;
+      this.playbackEngine.seekTo(time);
+
+      const inkCanvas = (this.inkEngine as any).getCanvas();
+      ctx.clearRect(0, 0, scaledWidth, scaledHeight);
+
+      if (paperCanvas) {
+        ctx.drawImage(paperCanvas, 0, 0);
+      }
+
+      ctx.save();
+      ctx.scale(opts.scale, opts.scale);
+      ctx.drawImage(inkCanvas, 0, 0);
+      ctx.restore();
+
+      if (opts.includePaper) {
+        ctx.fillStyle = "rgba(0,0,0,0.02)";
+        ctx.font = `${12 * opts.scale}px serif`;
+        ctx.textAlign = "right";
+        ctx.fillText(
+          "墨韵",
+          scaledWidth - 10 * opts.scale,
+          scaledHeight - 10 * opts.scale,
+        );
+      }
+
+      const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+      gifEncoder.addFrame(imageData, delayPerFrame);
+
+      onProgress?.({
+        currentFrame: i + 1,
+        totalFrames,
+        progress: (i + 1) / totalFrames,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    this.playbackEngine.reset();
+
+    const blob = gifEncoder.encode();
+    return blob;
   }
 
   async exportFrames(
@@ -227,7 +312,7 @@ export class VideoExporter {
     this.playbackEngine.reset();
 
     for (let i = 0; i < totalFrames; i++) {
-      const time = (i * frameInterval) * opts.speed;
+      const time = i * frameInterval * opts.speed;
       this.playbackEngine.seekTo(time);
 
       const inkCanvas = (this.inkEngine as any).getCanvas();

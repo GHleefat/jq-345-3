@@ -25,7 +25,9 @@ export default function Home() {
   const isDrawingRef = useRef(false);
   const animFrameRef = useRef<number>(0);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
-  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(
+    null,
+  );
   const [isExporting, setIsExporting] = useState(false);
   const [currentStrokeIndex, setCurrentStrokeIndex] = useState(0);
 
@@ -162,7 +164,11 @@ export default function Home() {
     if (!recorderRef.current || !engineRef.current) return;
     engineRef.current.clear();
     recorderRef.current.clear();
-    recorderRef.current.startRecording(canvasSize.width, canvasSize.height, paperType);
+    recorderRef.current.startRecording(
+      canvasSize.width,
+      canvasSize.height,
+      paperType,
+    );
     setPlaybackMode("recording");
     setStrokeCount(0);
     setCurrentStrokeIndex(0);
@@ -177,7 +183,12 @@ export default function Home() {
       setShowPlaybackControls(true);
     }
     setPlaybackMode("idle");
-  }, [setCurrentSession, setPlaybackMode, setShowPlaybackControls, setStrokeCount]);
+  }, [
+    setCurrentSession,
+    setPlaybackMode,
+    setShowPlaybackControls,
+    setStrokeCount,
+  ]);
 
   const handleEnterPlayback = useCallback(() => {
     if (!recorderRef.current || !engineRef.current) return;
@@ -185,7 +196,11 @@ export default function Home() {
     const session = recorderRef.current.getSession();
     if (!session) return;
 
-    const playbackEngine = new InkEngine(canvasSize.width, canvasSize.height, paperType);
+    const playbackEngine = new InkEngine(
+      canvasSize.width,
+      canvasSize.height,
+      paperType,
+    );
     const player = new PlaybackEngine(playbackEngine, {
       onTimeUpdate: (time) => {
         setPlaybackTime(time);
@@ -217,7 +232,14 @@ export default function Home() {
     setPlaybackMode("paused");
     setPlaybackTime(0);
     setCurrentStrokeIndex(0);
-  }, [canvasSize, paperType, playbackSpeed, setPlaybackMode, setPlaybackTime, setCurrentStrokeIndex]);
+  }, [
+    canvasSize,
+    paperType,
+    playbackSpeed,
+    setPlaybackMode,
+    setPlaybackTime,
+    setCurrentStrokeIndex,
+  ]);
 
   const handleExitPlayback = useCallback(() => {
     if (playbackEngineRef.current) {
@@ -240,72 +262,87 @@ export default function Home() {
     playbackEngineRef.current.seekTo(time);
   }, []);
 
-  const handleSpeedChange = useCallback((speed: number) => {
-    if (!playbackEngineRef.current) return;
-    playbackEngineRef.current.setPlaybackSpeed(speed);
-    setPlaybackSpeed(speed);
-  }, [setPlaybackSpeed]);
+  const handleSpeedChange = useCallback(
+    (speed: number) => {
+      if (!playbackEngineRef.current) return;
+      playbackEngineRef.current.setPlaybackSpeed(speed);
+      setPlaybackSpeed(speed);
+    },
+    [setPlaybackSpeed],
+  );
 
   const handleReset = useCallback(() => {
     if (!playbackEngineRef.current) return;
     playbackEngineRef.current.reset();
   }, []);
 
-  const handleExportVideo = useCallback(async (options: { fps: number; speed: number; quality: number }) => {
-    if (!videoExporterRef.current || !playbackEngineRef.current) return;
+  const handleExportVideo = useCallback(
+    async (options: { fps: number; speed: number; quality: number }) => {
+      if (!videoExporterRef.current || !playbackEngineRef.current) return;
 
-    setIsExporting(true);
-    setExportProgress(null);
+      setIsExporting(true);
+      setExportProgress(null);
 
-    try {
-      const blob = await videoExporterRef.current.exportVideo(
-        {
-          fps: options.fps,
-          speed: options.speed,
-          quality: options.quality,
-          scale: 1,
-          includePaper: true,
-        },
-        (progress) => {
-          setExportProgress(progress);
-        },
-      );
+      try {
+        const blob = await videoExporterRef.current.exportVideo(
+          {
+            fps: options.fps,
+            speed: options.speed,
+            quality: options.quality,
+            scale: 1,
+            includePaper: true,
+          },
+          (progress) => {
+            setExportProgress(progress);
+          },
+        );
 
-      if (blob) {
-        videoExporterRef.current.downloadBlob(blob, `墨韵_回放_${Date.now()}.webm`);
+        if (blob) {
+          videoExporterRef.current.downloadBlob(
+            blob,
+            `墨韵_回放_${Date.now()}.webm`,
+          );
+        }
+      } finally {
+        setIsExporting(false);
       }
-    } finally {
-      setIsExporting(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
-  const handleExportGIF = useCallback(async (options: { fps: number; speed: number }) => {
-    if (!videoExporterRef.current || !playbackEngineRef.current) return;
+  const handleExportGIF = useCallback(
+    async (options: { fps: number; speed: number }) => {
+      if (!videoExporterRef.current || !playbackEngineRef.current) return;
 
-    setIsExporting(true);
-    setExportProgress(null);
+      setIsExporting(true);
+      setExportProgress(null);
 
-    try {
-      const blob = await videoExporterRef.current.exportGIF(
-        {
-          fps: options.fps,
-          speed: options.speed,
-          quality: 0.9,
-          scale: 1,
-          includePaper: true,
-        },
-        (progress) => {
-          setExportProgress(progress);
-        },
-      );
+      try {
+        const blob = await videoExporterRef.current.exportGIF(
+          {
+            fps: options.fps,
+            speed: options.speed,
+            quality: 0.9,
+            scale: 1,
+            includePaper: true,
+          },
+          (progress) => {
+            setExportProgress(progress);
+          },
+        );
 
-      if (blob) {
-        videoExporterRef.current.downloadBlob(blob, `墨韵_动图_${Date.now()}.webm`);
+        if (blob) {
+          videoExporterRef.current.downloadBlob(
+            blob,
+            `墨韵_动图_${Date.now()}.gif`,
+          );
+        }
+      } finally {
+        setIsExporting(false);
       }
-    } finally {
-      setIsExporting(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -503,10 +540,10 @@ export default function Home() {
     playbackMode === "playing" || playbackMode === "paused"
       ? "default"
       : tool === "brush"
-      ? "crosshair"
-      : tool === "water"
-      ? "cell"
-      : "pointer";
+        ? "crosshair"
+        : tool === "water"
+          ? "cell"
+          : "pointer";
 
   const duration = playbackEngineRef.current
     ? playbackEngineRef.current.getState().duration

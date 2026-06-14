@@ -24,6 +24,7 @@ export class InkEngine {
   private rafId: number | null = null;
   private historyStack: ImageData[] = [];
   private maxHistory = 30;
+  private historyEnabled = true;
   private dwellRafId: number | null = null;
   private isDwelling = false;
   private dwellPoint: {
@@ -59,7 +60,12 @@ export class InkEngine {
     this.paperType = type;
   }
 
+  setHistoryEnabled(enabled: boolean) {
+    this.historyEnabled = enabled;
+  }
+
   pushHistory() {
+    if (!this.historyEnabled) return;
     const data = this.inkCtx.getImageData(0, 0, this.width, this.height);
     this.historyStack.push(data);
     if (this.historyStack.length > this.maxHistory) {
