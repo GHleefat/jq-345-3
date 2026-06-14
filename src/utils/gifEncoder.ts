@@ -3,149 +3,42 @@ export interface GIFFrame {
   delay: number;
 }
 
-class ColorQuantizer {
-  static quantize(imageData: ImageData, maxColors: number = 256): { palette: number[]; indices: Uint8Array } {
+class SimpleColorQuantizer {
+  static quantize(imageData: ImageData): { palette: Uint8Array; indices: Uint8Array } {
     const pixels = imageData.data;
-    const pixelCount = imageData.width * imageData.height;
+    const width = imageData.width;
+    const height = imageData.height;
+    const pixelCount = width * height;
 
-    const colorMap = new Map<number, number>();
-    const colorList: number[] = [];
-
+    const colorCounts = new Map<number, number>();
     for (let i = 0; i < pixelCount; i++) {
       const idx = i * 4;
       const r = pixels[idx];
       const g = pixels[idx + 1];
       const b = pixels[idx + 2];
       const color = (r << 16) | (g << 8) | b;
-
-      if (!colorMap.has(color)) {
-        colorMap.set(color, colorList.length);
-        colorList.push(color);
-      }
+      colorCounts.set(color, (colorCounts.get(color) || 0) + 1);
     }
 
-    if (colorList.length <= maxColors) {
-      const palette: number[] = [];
-      for (const color of colorList) {
-        palette.push((color >> 16) & 0xff);
-        palette.push((color >> 8) & 0xff);
-        palette.push(color & 0xff);
-      }
+    const colors = Array.from(colorCounts.entries());
+    colors.sort((a, b) => b[1] - a[1]);
 
-      while (palette.length < maxColors * 3) {
-        palette.push(0);
-      }
+    const palette = new Uint8Array(256 * 3);
+    const colorToIndex = new Map<number, number>();
 
-      const indices = new Uint8Array(pixelCount);
-      for (let i = 0; i < pixelCount; i++) {
-        const idx = i * 4;
-        const r = pixels[idx];
-        const g = pixels[idx + 1];
-        const b = pixels[idx + 2];
-        const color = (r << 16) | (g << 8) | b;
-        indices[i] = colorMap.get(color) || 0;
-      }
-
-      return { palette, indices };
+    const numColors = Math.min(256, colors.length);
+    for (let i = 0; i < numColors; i++) {
+      const color = colors[i][0];
+      palette[i * 3] = (color >> 16) & 0xff;
+      palette[i * 3 + 1] = (color >> 8) & 0xff;
+      palette[i * 3 + 2] = color & 0xff;
+      colorToIndex.set(color, i);
     }
 
-    return this.medianCutQuantize(imageData, maxColors);
-  }
-
-  private static medianCutQuantize(
-    imageData: ImageData,
-    maxColors: number,
-  ): { palette: number[]; indices: Uint8Array } {
-    const pixels = imageData.data;
-    const pixelCount = imageData.width * imageData.height;
-
-    const pixelColors: number[] = [];
-    for (let i = 0; i < pixelCount; i++) {
-      const idx = i * 4;
-      pixelColors.push((pixels[idx] << 16) | (pixels[idx + 1] << 8) | pixels[idx + 2]);
-    }
-
-    interface ColorBucket {
-      colors: number[];
-      rMin: number; rMax: number;
-      gMin: number; gMax: number;
-      bMin: number; bMax: number;
-    }
-
-    function buildBucket(colors: number[]): ColorBucket {
-      let rMin = 255, rMax = 0;
-      let gMin = 255, gMax = 0;
-      let bMin = 255, bMax = 0;
-
-      for (const c of colors) {
-        const r = (c >> 16) & 0xff;
-        const g = (c >> 8) & 0xff;
-        const b = c & 0xff;
-        if (r < rMin) rMin = r;
-        if (r > rMax) rMax = r;
-        if (g < gMin) gMin = g;
-        if (g > gMax) gMax = g;
-        if (b < bMin) bMin = b;
-        if (b > bMax) bMax = b;
+    if (numColors < 256) {
+      for (let i = numColors * 3; i < 256 * 3; i++) {
+        palette[i] = 0;
       }
-
-      return { colors, rMin, rMax, gMin, gMax, bMin, bMax };
-    }
-
-    function splitBucket(bucket: ColorBucket): [ColorBucket, ColorBucket] {
-      const rRange = bucket.rMax - bucket.rMin;
-      const gRange = bucket.gMax - bucket.gMin;
-      const bRange = bucket.bMax - bucket.bMin;
-
-      let sortKey: (c: number) => number;
-      if (rRange >= gRange && rRange >= bRange) {
-        sortKey = (c) => (c >> 16) & 0xff;
-      } else if (gRange >= bRange) {
-        sortKey = (c) => (c >> 8) & 0xff;
-      } else {
-        sortKey = (c) => c & 0xff;
-      }
-
-      const sorted = [...bucket.colors].sort((a, b) => sortKey(a) - sortKey(b));
-      const mid = Math.floor(sorted.length / 2);
-      return [buildBucket(sorted.slice(0, mid)), buildBucket(sorted.slice(mid))];
-    }
-
-    let buckets: ColorBucket[] = [buildBucket(pixelColors)];
-
-    while (buckets.length < maxColors) {
-      let largestIdx = 0;
-      let largestSize = 0;
-
-      for (let i = 0; i < buckets.length; i++) {
-        if (buckets[i].colors.length > largestSize) {
-          largestSize = buckets[i].colors.length;
-          largestIdx = i;
-        }
-      }
-
-      if (largestSize <= 1) break;
-
-      const [a, b] = splitBucket(buckets[largestIdx]);
-      buckets.splice(largestIdx, 1, a, b);
-    }
-
-    const palette: number[] = [];
-    for (const bucket of buckets) {
-      let rSum = 0, gSum = 0, bSum = 0;
-      for (const c of bucket.colors) {
-        rSum += (c >> 16) & 0xff;
-        gSum += (c >> 8) & 0xff;
-        bSum += c & 0xff;
-      }
-      const count = bucket.colors.length || 1;
-      palette.push(Math.round(rSum / count));
-      palette.push(Math.round(gSum / count));
-      palette.push(Math.round(bSum / count));
-    }
-
-    while (palette.length < maxColors * 3) {
-      palette.push(0);
     }
 
     const indices = new Uint8Array(pixelCount);
@@ -154,22 +47,25 @@ class ColorQuantizer {
       const r = pixels[idx];
       const g = pixels[idx + 1];
       const b = pixels[idx + 2];
+      const color = (r << 16) | (g << 8) | b;
 
-      let bestIdx = 0;
-      let bestDist = Infinity;
-
-      for (let j = 0; j < buckets.length; j++) {
-        const pr = palette[j * 3];
-        const pg = palette[j * 3 + 1];
-        const pb = palette[j * 3 + 2];
-        const dist = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestIdx = j;
+      let paletteIndex = colorToIndex.get(color);
+      if (paletteIndex === undefined) {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        for (let j = 0; j < numColors; j++) {
+          const pr = palette[j * 3];
+          const pg = palette[j * 3 + 1];
+          const pb = palette[j * 3 + 2];
+          const dist = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = j;
+          }
         }
+        paletteIndex = bestIdx;
       }
-
-      indices[i] = bestIdx;
+      indices[i] = paletteIndex;
     }
 
     return { palette, indices };
@@ -182,7 +78,6 @@ class LZWCompressor {
     const eoiCode = clearCode + 1;
     let nextCode = eoiCode + 1;
     let codeSize = minCodeSize + 1;
-    const maxCode = 1 << codeSize;
     const maxCodeSize = 12;
 
     const output: number[] = [];
@@ -200,48 +95,49 @@ class LZWCompressor {
       }
     }
 
-    const dictionary = new Map<string, number>();
-    function resetDictionary() {
-      dictionary.clear();
+    const dict = new Map<string, number>();
+
+    function resetDict() {
+      dict.clear();
       for (let i = 0; i < clearCode; i++) {
-        dictionary.set(String(i), i);
+        dict.set(String(i), i);
       }
       nextCode = eoiCode + 1;
       codeSize = minCodeSize + 1;
     }
 
-    resetDictionary();
+    resetDict();
     writeCode(clearCode);
 
-    let currentSequence = String(indices[0]);
+    let w = String(indices[0]);
 
     for (let i = 1; i < indices.length; i++) {
-      const nextIndex = indices[i];
-      const combined = currentSequence + "," + nextIndex;
+      const k = indices[i];
+      const wk = w + "," + k;
 
-      if (dictionary.has(combined)) {
-        currentSequence = combined;
+      if (dict.has(wk)) {
+        w = wk;
       } else {
-        const code = dictionary.get(currentSequence);
+        const code = dict.get(w);
         if (code !== undefined) {
           writeCode(code);
         }
 
         if (nextCode < (1 << maxCodeSize)) {
-          dictionary.set(combined, nextCode++);
+          dict.set(wk, nextCode++);
           if (nextCode > (1 << codeSize) && codeSize < maxCodeSize) {
             codeSize++;
           }
         } else {
           writeCode(clearCode);
-          resetDictionary();
+          resetDict();
         }
 
-        currentSequence = String(nextIndex);
+        w = String(k);
       }
     }
 
-    const finalCode = dictionary.get(currentSequence);
+    const finalCode = dict.get(w);
     if (finalCode !== undefined) {
       writeCode(finalCode);
     }
@@ -281,10 +177,9 @@ export class GIFEncoder {
       bytes.push(b & 0xff);
     }
 
-    function writeBytes(data: number[] | Uint8Array) {
-      for (let i = 0; i < data.length; i++) {
-        bytes.push(data[i] & 0xff);
-      }
+    function writeShort(s: number) {
+      bytes.push(s & 0xff);
+      bytes.push((s >> 8) & 0xff);
     }
 
     function writeString(str: string) {
@@ -293,30 +188,30 @@ export class GIFEncoder {
       }
     }
 
-    function writeShort(s: number) {
-      bytes.push(s & 0xff);
-      bytes.push((s >> 8) & 0xff);
+    function writePalette(palette: Uint8Array) {
+      for (let i = 0; i < 256; i++) {
+        const idx = i * 3;
+        writeByte(palette[idx] || 0);
+        writeByte(palette[idx + 1] || 0);
+        writeByte(palette[idx + 2] || 0);
+      }
     }
 
     writeString("GIF89a");
 
     writeShort(this.width);
     writeShort(this.height);
-
     writeByte(0xf7);
     writeByte(0);
     writeByte(0);
 
     const firstFrame = this.frames[0];
-    let globalPalette: number[] = [];
+    let globalPalette = new Uint8Array(256 * 3);
     if (firstFrame) {
-      const quant = ColorQuantizer.quantize(firstFrame.imageData, 256);
+      const quant = SimpleColorQuantizer.quantize(firstFrame.imageData);
       globalPalette = quant.palette;
     }
-
-    for (let i = 0; i < 256 * 3; i++) {
-      writeByte(globalPalette[i] || 0);
-    }
+    writePalette(globalPalette);
 
     writeByte(0x21);
     writeByte(0xff);
@@ -329,15 +224,13 @@ export class GIFEncoder {
 
     for (let i = 0; i < this.frames.length; i++) {
       const frame = this.frames[i];
+      const delayCs = Math.max(2, Math.round(frame.delay / 10));
 
       writeByte(0x21);
       writeByte(0xf9);
       writeByte(4);
-      writeByte(0x08);
-
-      const delayCs = Math.max(2, Math.round(frame.delay / 10));
+      writeByte(0x04);
       writeShort(delayCs);
-
       writeByte(0);
       writeByte(0);
 
@@ -348,8 +241,7 @@ export class GIFEncoder {
       writeShort(this.height);
       writeByte(0);
 
-      const quant = ColorQuantizer.quantize(frame.imageData, 256);
-
+      const quant = SimpleColorQuantizer.quantize(frame.imageData);
       const lzwData = LZWCompressor.compress(quant.indices, 8);
 
       const minCodeSize = 8;

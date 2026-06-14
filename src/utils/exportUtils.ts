@@ -39,6 +39,48 @@ export class VideoExporter {
     this.canvasHeight = canvasHeight;
   }
 
+  private getTotalFrames(fps: number, speed: number): number {
+    const state = this.playbackEngine.getState();
+    const originalDuration = state.duration;
+    const playbackDuration = originalDuration / speed;
+    return Math.max(1, Math.ceil((playbackDuration / 1000) * fps));
+  }
+
+  private renderFrame(
+    time: number,
+    ctx: CanvasRenderingContext2D,
+    scaledWidth: number,
+    scaledHeight: number,
+    scale: number,
+    paperCanvas: HTMLCanvasElement | null,
+    includePaper: boolean,
+  ) {
+    this.playbackEngine.seekTo(time);
+
+    const inkCanvas = (this.inkEngine as any).getCanvas();
+    ctx.clearRect(0, 0, scaledWidth, scaledHeight);
+
+    if (paperCanvas && includePaper) {
+      ctx.drawImage(paperCanvas, 0, 0);
+    }
+
+    ctx.save();
+    ctx.scale(scale, scale);
+    ctx.drawImage(inkCanvas, 0, 0);
+    ctx.restore();
+
+    if (includePaper) {
+      ctx.fillStyle = "rgba(0,0,0,0.15)";
+      ctx.font = `${12 * scale}px serif`;
+      ctx.textAlign = "right";
+      ctx.fillText(
+        "墨韵",
+        scaledWidth - 10 * scale,
+        scaledHeight - 10 * scale,
+      );
+    }
+  }
+
   async exportVideo(
     options: Partial<ExportOptions> = {},
     onProgress?: (progress: ExportProgress) => void,
@@ -53,57 +95,50 @@ export class VideoExporter {
     };
 
     const opts = { ...defaultOptions, ...options };
-
-    if (opts.format === "webm") {
-      return this.exportWebM(opts, onProgress);
-    } else {
-      return null;
-    }
+    return this.exportWebM(opts, onProgress);
   }
 
   private async exportWebM(
     options: ExportOptions,
     onProgress?: (progress: ExportProgress) => void,
   ): Promise<Blob | null> {
+    const totalFrames = this.getTotalFrames(options.fps, options.speed);
+    const frameInterval = 1000 / options.fps;
+
+    const scaledWidth = Math.floor(this.canvasWidth * options.scale);
+    const scaledHeight = Math.floor(this.canvasHeight * options.scale);
+
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = scaledWidth;
+    exportCanvas.height = scaledHeight;
+    const ctx = exportCanvas.getContext("2d")!;
+
+    const paperCanvas = options.includePaper
+      ? generatePaperTexture(scaledWidth, scaledHeight, this.paperType)
+      : null;
+
+    const mimeTypes = [
+      "video/webm;codecs=vp9",
+      "video/webm;codecs=vp8",
+      "video/webm",
+    ];
+    let mimeType = "";
+    for (const type of mimeTypes) {
+      if (
+        typeof MediaRecorder !== "undefined" &&
+        MediaRecorder.isTypeSupported(type)
+      ) {
+        mimeType = type;
+        break;
+      }
+    }
+
+    if (!mimeType) {
+      return this.exportGIF(options, onProgress);
+    }
+
     return new Promise((resolve, reject) => {
-      const state = this.playbackEngine.getState();
-      const duration = state.duration / options.speed;
-      const totalFrames = Math.ceil(duration * options.fps);
-
-      const exportCanvas = document.createElement("canvas");
-      const scaledWidth = Math.floor(this.canvasWidth * options.scale);
-      const scaledHeight = Math.floor(this.canvasHeight * options.scale);
-      exportCanvas.width = scaledWidth;
-      exportCanvas.height = scaledHeight;
-
-      const ctx = exportCanvas.getContext("2d")!;
-
-      const paperCanvas = options.includePaper
-        ? generatePaperTexture(scaledWidth, scaledHeight, this.paperType)
-        : null;
-
       const stream = (exportCanvas as any).captureStream(options.fps);
-      const mimeTypes = [
-        "video/webm;codecs=vp9",
-        "video/webm;codecs=vp8",
-        "video/webm",
-      ];
-      let mimeType = "";
-      for (const type of mimeTypes) {
-        if (
-          typeof MediaRecorder !== "undefined" &&
-          MediaRecorder.isTypeSupported(type)
-        ) {
-          mimeType = type;
-          break;
-        }
-      }
-
-      if (!mimeType) {
-        reject(new Error("WebM recording is not supported in this browser"));
-        return;
-      }
-
       const recorderOptions: MediaRecorderOptions = {
         mimeType,
         videoBitsPerSecond: Math.floor(5000000 * options.quality),
@@ -120,76 +155,58 @@ export class VideoExporter {
 
       recorder.onstop = () => {
         const blob = new Blob(chunks, { type: mimeType });
+        this.playbackEngine.reset();
         resolve(blob);
       };
 
       recorder.onerror = (e) => {
+        this.playbackEngine.reset();
         reject(e);
       };
 
       this.playbackEngine.reset();
-      this.playbackEngine.setPlaybackSpeed(options.speed);
 
       let currentFrame = 0;
-      let isRecording = true;
+      let isRecording = false;
 
-      const originalOnTimeUpdate = (this.playbackEngine as any).callbacks
-        ?.onTimeUpdate;
-
-      (this.playbackEngine as any).callbacks.onTimeUpdate = (time: number) => {
-        const inkCanvas = (this.inkEngine as any).getCanvas();
-        ctx.clearRect(0, 0, scaledWidth, scaledHeight);
-
-        if (paperCanvas) {
-          ctx.drawImage(paperCanvas, 0, 0);
+      const renderNextFrame = () => {
+        if (currentFrame >= totalFrames) {
+          if (isRecording) {
+            isRecording = false;
+            setTimeout(() => {
+              if (recorder.state === "recording") {
+                recorder.stop();
+              }
+            }, 500);
+          }
+          return;
         }
 
-        ctx.save();
-        ctx.scale(options.scale, options.scale);
-        ctx.drawImage(inkCanvas, 0, 0);
-        ctx.restore();
-
-        if (options.includePaper) {
-          ctx.fillStyle = "rgba(0,0,0,0.02)";
-          ctx.font = `${12 * options.scale}px serif`;
-          ctx.textAlign = "right";
-          ctx.fillText(
-            "墨韵",
-            scaledWidth - 10 * options.scale,
-            scaledHeight - 10 * options.scale,
-          );
-        }
+        const time = currentFrame * frameInterval * options.speed;
+        this.renderFrame(
+          time,
+          ctx,
+          scaledWidth,
+          scaledHeight,
+          options.scale,
+          paperCanvas,
+          options.includePaper,
+        );
 
         currentFrame++;
-        const progress = Math.min(1, currentFrame / totalFrames);
         onProgress?.({
           currentFrame,
           totalFrames,
-          progress,
+          progress: currentFrame / totalFrames,
         });
 
-        originalOnTimeUpdate?.(time);
+        requestAnimationFrame(renderNextFrame);
       };
 
-      const originalOnComplete = (this.playbackEngine as any).callbacks
-        ?.onComplete;
-      (this.playbackEngine as any).callbacks.onComplete = () => {
-        setTimeout(() => {
-          if (isRecording) {
-            isRecording = false;
-            recorder.stop();
-            (this.playbackEngine as any).callbacks.onTimeUpdate =
-              originalOnTimeUpdate;
-            (this.playbackEngine as any).callbacks.onComplete =
-              originalOnComplete;
-          }
-        }, 500);
+      recorder.start(100);
+      isRecording = true;
 
-        originalOnComplete?.();
-      };
-
-      recorder.start(1000 / options.fps);
-      this.playbackEngine.play();
+      requestAnimationFrame(renderNextFrame);
     });
   }
 
@@ -208,72 +225,63 @@ export class VideoExporter {
 
     const opts = { ...defaultOptions, ...options };
 
-    const state = this.playbackEngine.getState();
-    const duration = state.duration / opts.speed;
-    const totalFrames = Math.ceil(duration * opts.fps);
-    const frameInterval = 1000 / opts.fps;
-    const delayPerFrame = Math.round(100 / opts.fps);
+    try {
+      const totalFrames = this.getTotalFrames(opts.fps, opts.speed);
+      const frameInterval = 1000 / opts.fps;
+      const delayPerFrame = Math.max(2, Math.round(100 / opts.fps));
 
-    const scaledWidth = Math.floor(this.canvasWidth * opts.scale);
-    const scaledHeight = Math.floor(this.canvasHeight * opts.scale);
+      const scaledWidth = Math.floor(this.canvasWidth * opts.scale);
+      const scaledHeight = Math.floor(this.canvasHeight * opts.scale);
 
-    const exportCanvas = document.createElement("canvas");
-    exportCanvas.width = scaledWidth;
-    exportCanvas.height = scaledHeight;
-    const ctx = exportCanvas.getContext("2d")!;
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = scaledWidth;
+      exportCanvas.height = scaledHeight;
+      const ctx = exportCanvas.getContext("2d")!;
 
-    const paperCanvas = opts.includePaper
-      ? generatePaperTexture(scaledWidth, scaledHeight, this.paperType)
-      : null;
+      const paperCanvas = opts.includePaper
+        ? generatePaperTexture(scaledWidth, scaledHeight, this.paperType)
+        : null;
 
-    this.playbackEngine.reset();
+      this.playbackEngine.reset();
 
-    const gifEncoder = new GIFEncoder(scaledWidth, scaledHeight);
-    gifEncoder.setRepeat(0);
+      const gifEncoder = new GIFEncoder(scaledWidth, scaledHeight);
+      gifEncoder.setRepeat(0);
 
-    for (let i = 0; i < totalFrames; i++) {
-      const time = i * frameInterval * opts.speed;
-      this.playbackEngine.seekTo(time);
-
-      const inkCanvas = (this.inkEngine as any).getCanvas();
-      ctx.clearRect(0, 0, scaledWidth, scaledHeight);
-
-      if (paperCanvas) {
-        ctx.drawImage(paperCanvas, 0, 0);
-      }
-
-      ctx.save();
-      ctx.scale(opts.scale, opts.scale);
-      ctx.drawImage(inkCanvas, 0, 0);
-      ctx.restore();
-
-      if (opts.includePaper) {
-        ctx.fillStyle = "rgba(0,0,0,0.02)";
-        ctx.font = `${12 * opts.scale}px serif`;
-        ctx.textAlign = "right";
-        ctx.fillText(
-          "墨韵",
-          scaledWidth - 10 * opts.scale,
-          scaledHeight - 10 * opts.scale,
+      for (let i = 0; i < totalFrames; i++) {
+        const time = i * frameInterval * opts.speed;
+        this.renderFrame(
+          time,
+          ctx,
+          scaledWidth,
+          scaledHeight,
+          opts.scale,
+          paperCanvas,
+          opts.includePaper,
         );
+
+        const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+        gifEncoder.addFrame(imageData, delayPerFrame);
+
+        onProgress?.({
+          currentFrame: i + 1,
+          totalFrames,
+          progress: (i + 1) / totalFrames,
+        });
+
+        if (i % 10 === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
       }
 
-      const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
-      gifEncoder.addFrame(imageData, delayPerFrame);
+      this.playbackEngine.reset();
 
-      onProgress?.({
-        currentFrame: i + 1,
-        totalFrames,
-        progress: (i + 1) / totalFrames,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      const blob = gifEncoder.encode();
+      return blob;
+    } catch (e) {
+      console.error("GIF export failed:", e);
+      this.playbackEngine.reset();
+      return null;
     }
-
-    this.playbackEngine.reset();
-
-    const blob = gifEncoder.encode();
-    return blob;
   }
 
   async exportFrames(
@@ -292,9 +300,7 @@ export class VideoExporter {
 
     const opts = { ...defaultOptions, ...options };
 
-    const state = this.playbackEngine.getState();
-    const duration = state.duration / opts.speed;
-    const totalFrames = Math.ceil(duration * opts.fps);
+    const totalFrames = this.getTotalFrames(opts.fps, opts.speed);
     const frameInterval = 1000 / opts.fps;
 
     const exportCanvas = document.createElement("canvas");
@@ -313,19 +319,15 @@ export class VideoExporter {
 
     for (let i = 0; i < totalFrames; i++) {
       const time = i * frameInterval * opts.speed;
-      this.playbackEngine.seekTo(time);
-
-      const inkCanvas = (this.inkEngine as any).getCanvas();
-      ctx.clearRect(0, 0, scaledWidth, scaledHeight);
-
-      if (paperCanvas) {
-        ctx.drawImage(paperCanvas, 0, 0);
-      }
-
-      ctx.save();
-      ctx.scale(opts.scale, opts.scale);
-      ctx.drawImage(inkCanvas, 0, 0);
-      ctx.restore();
+      this.renderFrame(
+        time,
+        ctx,
+        scaledWidth,
+        scaledHeight,
+        opts.scale,
+        paperCanvas,
+        opts.includePaper,
+      );
 
       const dataUrl = exportCanvas.toDataURL("image/png", opts.quality);
       onFrame?.(dataUrl, i);
@@ -336,7 +338,9 @@ export class VideoExporter {
         progress: (i + 1) / totalFrames,
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (i % 5 === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
 
     this.playbackEngine.reset();
